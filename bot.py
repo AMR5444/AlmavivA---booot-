@@ -4,638 +4,341 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.webdriver.common.action_chains import ActionChains
 import chromedriver_autoinstaller
-import time
-import threading
-import requests
+import time, threading, requests
 from datetime import datetime
 
-from config import (
-    ACCOUNTS, REFRESH_INTERVAL, PROXY, HEADLESS_MODE,
-    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-)
+from config import *
 
 stop_flag = threading.Event()
-APPOINTMENT_URL = "https://egy.almaviva-visa.it/appointment"
 
-# ============================================================
-# Telegram
-# ============================================================
-def send_telegram(message):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, json={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "Markdown"
-        }, timeout=10)
-        print("  [TG] Sent")
-    except Exception as e:
-        print(f"  [TG] Failed: {e}")
+# ================= DRIVER =================
+def make_driver():
+    path = chromedriver_autoinstaller.install()
+    opts = Options()
 
-def notify_success(account, slots_data):
-    slots_text = "\n".join(slots_data) if slots_data else "Slots available"
-    send_telegram(
-        f"✅ *SLOTS FOUND!*\n\n"
-        f"👤 {account['email']}\n"
-        f"📆 Slots:\n{slots_text}\n\n"
-        f"🕒 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"⚠️ Login NOW and complete booking manually!"
-    )
-
-def notify_error(account, reason):
-    send_telegram(
-        f"❌ *Bot Error*\n\n"
-        f"👤 {account['email']}\n"
-        f"❗ {reason}\n"
-        f"🕒 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-
-# ============================================================
-# Driver
-# ============================================================
-def get_driver():
-    chromedriver_path = chromedriver_autoinstaller.install()
-    print(f"  [Driver] {chromedriver_path}")
-    options = Options()
     if HEADLESS_MODE:
-        options.add_argument('--headless=new')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-blink-features=AutomationControlled')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--window-size=1920,1080')
-    options.add_argument('--disable-extensions')
-    options.add_argument('--ignore-certificate-errors')
-    options.add_experimental_option('excludeSwitches', ['enable-automation'])
-    options.add_experimental_option('useAutomationExtension', False)
-    options.page_load_strategy = 'eager'
-    if PROXY:
-        options.add_argument(f'--proxy-server={PROXY}')
-    service = Service(chromedriver_path)
-    driver = webdriver.Chrome(service=service, options=options)
-    driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-        'source': "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        opts.add_argument("--headless=new")
+
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--window-size=1920,1080")
+    opts.add_argument("--disable-blink-features=AutomationControlled")
+
+    driver = webdriver.Chrome(service=Service(path), options=opts)
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+        "source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
     })
-    driver.set_page_load_timeout(60)
-    driver.implicitly_wait(0)
     return driver
 
-def safe_get(driver, url):
-    try:
-        driver.get(url)
-    except (TimeoutException, WebDriverException) as e:
-        if "timeout" not in str(e).lower():
-            raise
-
-def js_click(driver, el):
+# ================= HELPERS =================
+def real_click(driver, el):
     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
     time.sleep(0.2)
-    driver.execute_script("arguments[0].click();", el)
+    ActionChains(driver).move_to_element(el).click().perform()
+    time.sleep(0.3)
 
-def wait_spinner_gone(driver, timeout=15):
-    end = time.time() + timeout
+def wait_no_spinner(driver, t=15):
+    end = time.time() + t
     while time.time() < end:
         try:
-            spinners = driver.find_elements(By.CSS_SELECTOR,
-                "mat-spinner, [class*='spinner'], [class*='loading']")
-            if not any(s.is_displayed() for s in spinners):
+            sp = driver.find_elements(By.CSS_SELECTOR,
+                "mat-spinner,[class*='spinner'],[class*='loading']")
+            if not any(s.is_displayed() for s in sp):
                 return
         except:
             pass
         time.sleep(0.3)
 
-# ============================================================
-# Login
-# ============================================================
-def login(driver, email, password):
-    print("  [Login] Opening...")
-    safe_get(driver, "https://egy.almaviva-visa.it/login")
+# ================= TELEGRAM =================
+def send(msg):
     try:
-        field = WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located((By.ID, "username"))
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}
         )
-    except:
-        if "login" not in driver.current_url:
-            print("  [Login] Already logged in")
-            return True
-        return False
-    field.clear()
-    field.send_keys(email)
-    time.sleep(0.3)
-    driver.find_element(By.ID, "password").clear()
-    driver.find_element(By.ID, "password").send_keys(password)
-    time.sleep(0.3)
-    driver.find_element(By.ID, "kc-login").click()
-    for _ in range(15):
-        time.sleep(1)
-        if "login" not in driver.current_url:
-            print("  [Login] Success")
-            return True
-    print("  [Login] Failed")
-    return False
-
-# ============================================================
-# Navigate to appointment page
-# ============================================================
-def go_to_appointment_page(driver):
-    print("  [Nav] Opening appointment page...")
-    safe_get(driver, APPOINTMENT_URL)
-
-    for _ in range(10):
-        time.sleep(1)
-        if "appointment" in driver.current_url:
-            break
-    else:
-        print(f"  [Nav] Wrong URL: {driver.current_url}")
-        return False
-
-    wait_spinner_gone(driver, timeout=20)
-
-    try:
-        WebDriverWait(driver, 25).until(
-            EC.presence_of_element_located(
-                (By.XPATH, "//mat-select[@formcontrolname='officeId']"))
-        )
-    except:
-        print("  [Nav] Center dropdown not found")
-        return False
-
-    wait_spinner_gone(driver, timeout=10)
-    time.sleep(1)
-    print("  [Nav] Page ready")
-    return True
-
-# ============================================================
-# Core helper: click mat-select and wait for options
-# ============================================================
-def click_and_get_options(driver, dropdown_el, label="", timeout=20):
-    """Click a mat-select and wait until options with real text appear."""
-    js_click(driver, dropdown_el)
-    time.sleep(0.5)
-
-    end = time.time() + timeout
-    while time.time() < end:
-        try:
-            opts = driver.find_elements(By.XPATH, "//mat-option")
-            loaded = [o for o in opts if o.is_displayed() and o.text.strip()]
-            if loaded:
-                texts = [o.text.strip() for o in loaded]
-                print(f"    [{label}] Options: {texts}")
-                return loaded
-        except:
-            pass
-        time.sleep(0.5)
-
-    # one retry
-    print(f"    [{label}] Retry click...")
-    js_click(driver, dropdown_el)
-    end = time.time() + 10
-    while time.time() < end:
-        try:
-            opts = driver.find_elements(By.XPATH, "//mat-option")
-            loaded = [o for o in opts if o.is_displayed() and o.text.strip()]
-            if loaded:
-                texts = [o.text.strip() for o in loaded]
-                print(f"    [{label}] Options: {texts}")
-                return loaded
-        except:
-            pass
-        time.sleep(0.5)
-
-    print(f"    [{label}] No options loaded")
-    return []
-
-def best_match(options, target):
-    t = target.strip().lower()
-    for o in options:
-        if o.text.strip().lower() == t:
-            return o
-    for o in options:
-        if t in o.text.strip().lower() or o.text.strip().lower() in t:
-            return o
-    return None
-
-def close_panel(driver):
-    try:
-        driver.find_element(By.TAG_NAME, 'body').click()
-        time.sleep(0.3)
     except:
         pass
 
-# ============================================================
-# STEP 1 — Select center (officeId)
-# ============================================================
-def step1_center(driver, center_text):
-    print("  [Step 1] Select center...")
+# ================= LOGIN =================
+def login(driver, email, password):
+    driver.get("https://egy.almaviva-visa.it/login")
+
     try:
-        el = WebDriverWait(driver, 15).until(
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.ID, "username"))
+        )
+    except:
+        return True
+
+    driver.find_element(By.ID, "username").send_keys(email)
+    driver.find_element(By.ID, "password").send_keys(password)
+    driver.find_element(By.ID, "kc-login").click()
+
+    for _ in range(20):
+        if "login" not in driver.current_url:
+            return True
+        time.sleep(1)
+
+    return False
+
+# ================= OPEN APPOINTMENT =================
+def open_appointment(driver):
+    driver.get("https://egy.almaviva-visa.it/")
+    time.sleep(3)
+
+    try:
+        btn = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, "//a[contains(@href,'appointment')]"))
+        )
+        real_click(driver, btn)
+    except:
+        driver.get("https://egy.almaviva-visa.it/appointment")
+
+    try:
+        WebDriverWait(driver, 20).until(
             EC.presence_of_element_located(
                 (By.XPATH, "//mat-select[@formcontrolname='officeId']"))
         )
+        return True
     except:
-        print("  [Step 1] FAIL - not found")
         return False
 
-    options = click_and_get_options(driver, el, "center", timeout=20)
-    if not options:
-        print("  [Step 1] FAIL - no options")
-        return False
-
-    chosen = best_match(options, center_text)
-    if not chosen:
-        avail = [o.text.strip() for o in options]
-        print(f"  [Step 1] FAIL - '{center_text}' not in {avail}")
-        print(f"  [Step 1] >>> Fix config 'center' to one of: {avail}")
-        close_panel(driver)
-        return False
-
-    js_click(driver, chosen)
-    print(f"  [Step 1] OK - '{chosen.text.strip()}'")
-    wait_spinner_gone(driver, 10)
-    time.sleep(1.5)  # wait for service level to appear
-    return True
-
-# ============================================================
-# STEP 2 — Select service level (Standard / VIP)
-# Appears right after center selection
-# ============================================================
-def step2_service_level(driver, service_text):
-    print("  [Step 2] Select service level...")
-
-    # Wait for idServiceLevel to appear and be enabled
-    el = None
-    for _ in range(20):
+# ================= SELECT DROPDOWN (FIX STALE) =================
+def select_option(driver, formcontrol, text):
+    for _ in range(3):
         try:
-            candidates = driver.find_elements(
-                By.XPATH, "//mat-select[@formcontrolname='idServiceLevel']")
-            if not candidates:
-                # fallback: second mat-select on page
-                all_ms = driver.find_elements(By.XPATH, "//mat-select")
-                candidates = [s for s in all_ms
-                              if s.get_attribute("formcontrolname") != "officeId"]
-            for c in candidates:
-                if c.is_displayed() and c.get_attribute("aria-disabled") != "true":
-                    el = c
-                    break
+            el = WebDriverWait(driver, 15).until(
+                EC.element_to_be_clickable(
+                    (By.XPATH, f"//mat-select[@formcontrolname='{formcontrol}']")
+                )
+            )
+
+            real_click(driver, el)
+
+            opts = WebDriverWait(driver, 10).until(
+                EC.presence_of_all_elements_located((By.XPATH, "//mat-option"))
+            )
+
+            for o in opts:
+                if text.lower() in o.text.lower():
+                    real_click(driver, o)
+                    wait_no_spinner(driver, 10)
+                    time.sleep(1.5)
+                    return True
         except:
-            pass
-        if el:
-            break
-        time.sleep(0.5)
+            time.sleep(1)
+    return False
 
-    if not el:
-        print("  [Step 2] FAIL - service level dropdown not found/enabled")
-        return False
-
-    fc = el.get_attribute("formcontrolname") or el.get_attribute("id") or "?"
-    print(f"    [Step 2] Found: {fc}")
-
-    options = click_and_get_options(driver, el, "service_level", timeout=15)
-    if not options:
-        print("  [Step 2] FAIL - no options")
-        return False
-
-    chosen = best_match(options, service_text)
-    if not chosen:
-        avail = [o.text.strip() for o in options]
-        print(f"  [Step 2] FAIL - '{service_text}' not in {avail}")
-        print(f"  [Step 2] >>> Fix config 'service_level' to one of: {avail}")
-        close_panel(driver)
-        return False
-
-    js_click(driver, chosen)
-    print(f"  [Step 2] OK - '{chosen.text.strip()}'")
-    wait_spinner_gone(driver, 10)
-    time.sleep(1.5)  # wait for visa type to appear
-    return True
-
-# ============================================================
-# STEP 3 — Select visa type
-# Appears after service level selection
-# ============================================================
-def step3_visa_type(driver, visa_text):
-    print("  [Step 3] Select visa type...")
-
-    # Wait for the 3rd mat-select: not officeId, not idServiceLevel
-    el = None
-    for _ in range(20):
+# ================= VISA TYPE =================
+def select_last_dropdown(driver, text):
+    for _ in range(3):
         try:
-            all_ms = driver.find_elements(By.XPATH, "//mat-select")
-            for s in all_ms:
-                fc = s.get_attribute("formcontrolname") or ""
-                if fc in ("officeId", "idServiceLevel"):
-                    continue
-                if s.is_displayed() and s.get_attribute("aria-disabled") != "true":
-                    el = s
-                    break
+            selects = driver.find_elements(By.XPATH, "//mat-select")
+            selects = [s for s in selects if s.is_displayed()]
+            el = selects[-1]
+
+            real_click(driver, el)
+
+            opts = WebDriverWait(driver, 10).until(
+                EC.presence_of_all_elements_located((By.XPATH, "//mat-option"))
+            )
+
+            for o in opts:
+                if text.lower() in o.text.lower():
+                    real_click(driver, o)
+                    wait_no_spinner(driver, 10)
+                    return True
         except:
-            pass
-        if el:
-            break
-        time.sleep(0.5)
+            time.sleep(1)
+    return False
 
-    if not el:
-        print("  [Step 3] FAIL - visa type dropdown not found/enabled")
+# ================= FILL FORM =================
+def fill_form(driver, data):
+    wait_no_spinner(driver, 10)
+
+    if not select_option(driver, "officeId", data["center"]):
         return False
 
-    fc = el.get_attribute("formcontrolname") or el.get_attribute("id") or "?"
-    print(f"    [Step 3] Found: {fc}")
-
-    options = click_and_get_options(driver, el, "visa_type", timeout=15)
-    if not options:
-        print("  [Step 3] FAIL - no options")
+    if not select_option(driver, "idServiceLevel", data["service_level"]):
         return False
 
-    chosen = best_match(options, visa_text)
-    if not chosen:
-        avail = [o.text.strip() for o in options]
-        print(f"  [Step 3] FAIL - '{visa_text}' not in {avail}")
-        print(f"  [Step 3] >>> Fix config 'visa_type' to one of: {avail}")
-        close_panel(driver)
+    if not select_last_dropdown(driver, data["visa_type"]):
         return False
 
-    js_click(driver, chosen)
-    print(f"  [Step 3] OK - '{chosen.text.strip()}'")
-    wait_spinner_gone(driver, 10)
-    time.sleep(0.5)
-    return True
-
-# ============================================================
-# STEP 4 — Set trip date
-# ============================================================
-def step4_date(driver, date_value):
-    print("  [Step 4] Set date...")
+    # DATE
     try:
-        parts = date_value.split('/')
-        formatted = f"{parts[0].zfill(2)}/{parts[1].zfill(2)}/{parts[2]}"
-        inp = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.ID, "pickerInput"))
-        )
+        inp = driver.find_element(By.ID, "pickerInput")
         driver.execute_script("""
-            var input = arguments[0];
-            input.removeAttribute('readonly');
-            var setter = Object.getOwnPropertyDescriptor(
-                window.HTMLInputElement.prototype, 'value').set;
-            setter.call(input, arguments[1]);
-            ['input','change','blur'].forEach(function(e) {
-                input.dispatchEvent(new Event(e, {bubbles:true}));
-            });
-        """, inp, formatted)
-        print(f"  [Step 4] OK - {formatted}")
-        time.sleep(0.5)
-        return True
-    except Exception as e:
-        print(f"  [Step 4] FAIL: {e}")
+            arguments[0].removeAttribute('readonly');
+            arguments[0].value=arguments[1];
+            arguments[0].dispatchEvent(new Event('change',{bubbles:true}));
+        """, inp, data["travel_date"])
+    except:
         return False
 
-# ============================================================
-# STEP 5 — Set destination
-# ============================================================
-def step5_destination(driver, destination):
-    print("  [Step 5] Set destination...")
+    # DEST
     try:
-        inp = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located(
-                (By.XPATH, "//input[@formcontrolname='tripDestination']"))
-        )
-        inp.clear()
-        inp.send_keys(destination)
-        print(f"  [Step 5] OK - {destination}")
-        time.sleep(0.3)
-        return True
-    except Exception as e:
-        print(f"  [Step 5] FAIL: {e}")
+        d = driver.find_element(By.XPATH, "//input[@formcontrolname='tripDestination']")
+        d.clear()
+        d.send_keys(data["destination"])
+    except:
         return False
 
-# ============================================================
-# STEP 6 — Accept terms
-# ============================================================
-def step6_terms(driver):
-    print("  [Step 6] Accept terms...")
-    count = 0
-    for cb_id in ["mat-mdc-checkbox-1-input", "mat-mdc-checkbox-2-input"]:
+    # TERMS
+    for cb in driver.find_elements(By.XPATH, "//input[@type='checkbox']"):
         try:
-            cb = driver.find_element(By.ID, cb_id)
             if not cb.is_selected():
-                js_click(driver, cb)
-                count += 1
-                time.sleep(0.3)
+                real_click(driver, cb)
         except:
             pass
-    if count == 0:
-        for cb in driver.find_elements(By.XPATH, "//input[@type='checkbox']"):
-            try:
-                if not cb.is_selected() and cb.is_displayed():
-                    js_click(driver, cb)
-                    count += 1
-                    time.sleep(0.3)
-            except:
-                pass
-    print(f"  [Step 6] OK - {count} checked")
 
-# ============================================================
-# STEP 7 — Click Check Availability & parse result
-# ============================================================
-def step7_check_availability(driver):
-    print("  [Step 7] Clicking Check Availability...")
+    return True
+
+# ================= CHECK =================
+def check(driver):
+    print("  [CHECK] Searching button...")
 
     btn = None
+
     xpaths = [
-        "//button[contains(normalize-space(.), 'افحص الاماكن المتاحة')]",
-        "//button[contains(normalize-space(.), 'افحص الأماكن المتاحة')]",
-        "//button[contains(normalize-space(.), 'الاماكن المتاحة')]",
-        "//button[contains(normalize-space(.), 'Check availability')]",
-        "//button[contains(normalize-space(.), 'Check Availability')]",
-        "//button[contains(normalize-space(.), 'Check')]",
-        "//button[@type='submit']",
+        "//button[contains(.,'Check')]",
+        "//button[contains(.,'Availability')]",
+        "//button[contains(.,'available')]",
+        "//button[contains(.,'افحص')]",
+        "//button[contains(.,'المتاحة')]",
     ]
-    for xpath in xpaths:
+
+    for xp in xpaths:
         try:
             btn = WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((By.XPATH, xpath))
+                EC.element_to_be_clickable((By.XPATH, xp))
             )
-            print(f"    [Step 7] Button: '{btn.text.strip()}'")
+            print(f"  [CHECK] Found: {btn.text}")
             break
         except:
             continue
 
     if not btn:
+        print("  [CHECK] Fallback to last button...")
+        buttons = driver.find_elements(By.TAG_NAME, "button")
+        for b in reversed(buttons):
+            if b.is_displayed() and b.is_enabled():
+                btn = b
+                break
+
+    if not btn:
+        print("  [CHECK] Button NOT FOUND ❌")
+        return False
+
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+        time.sleep(0.3)
+        driver.execute_script("arguments[0].click();", btn)
+        print("  [CHECK] Clicked ✅")
+    except Exception as e:
+        print("  [CHECK] Click failed:", e)
+        return False
+
+    wait_no_spinner(driver, 10)
+    time.sleep(3)
+
+    page = driver.page_source.lower()
+
+    # ⭐ التصحيح: كل شرط لازم يكون "in page"
+    no_slots = (
+        "no available" in page or
+        "not available" in page or
+        "لا يوجد" in page or
+        "لا توجد" in page  # ← كانت ناقصها "in page"
+    )
+
+    if no_slots:
+        print("  [CHECK] No slots ❌")
+        return False
+
+    # ⭐ تحقق إضافي: دور على عناصر المواعيد
+    slot_selectors = [
+        ".available-day",
+        "[class*='available']",
+        "[class*='slot']",
+        "[class*='calendar']",
+    ]
+    for sel in slot_selectors:
         try:
-            buttons = driver.find_elements(By.TAG_NAME, "button")
-            for b in buttons:
-                txt = b.text.strip().lower()
-                if b.is_displayed() and b.is_enabled() and txt and "login" not in txt:
-                    btn = b
-                    print(f"    [Step 7] Fallback: '{b.text.strip()}'")
-                    break
+            els = driver.find_elements(By.CSS_SELECTOR, sel)
+            slots = [e.text.strip() for e in els if e.text.strip()]
+            if slots:
+                print(f"  [CHECK] ✅ SLOTS FOUND: {slots[:5]}")
+                return True
         except:
             pass
 
-    if not btn:
-        print("  [Step 7] FAIL - button not found")
-        return False, None
+    print("  [CHECK] POSSIBLE SLOT 🔥 (no 'no slots' text found)")
+    return True
 
-    js_click(driver, btn)
-    print("  [Step 7] Clicked!")
-    wait_spinner_gone(driver, timeout=15)
-    time.sleep(3)
+# ================= MAIN =================
+def run(acc):
+    driver = make_driver()
 
-    # Parse result
-    page = driver.page_source.lower()
-    for kw in ["no available", "not available", "no slots", "لا توجد مواعيد", "لا يوجد", "لا توجد أماكن", "no appointment"]:
-        if kw in page:
-            print("  [Step 7] No slots available")
-            return False, None
+    if not login(driver, acc["email"], acc["password"]):
+        send("❌ Login failed")
+        return
 
-    for sel in [".available-day", "[class*='available']",
-                "[class*='slot']", "[class*='calendar']", "mat-card"]:
-        els = driver.find_elements(By.CSS_SELECTOR, sel)
-        slots = [e.text.strip() for e in els if e.text.strip()]
-        if slots:
-            print(f"  [Step 7] ✅ SLOTS: {slots[:5]}")
-            return True, slots[:5]
+    notified_no_slots = False
 
-    print("  [Step 7] Result page loaded - no slot elements found")
-    return False, None
-
-# ============================================================
-# Run full form
-# ============================================================
-def fill_and_check(driver, data):
-    print("\n  ===== FORM START =====")
-    wait_spinner_gone(driver, 10)
-    driver.execute_script("window.scrollTo(0, 0);")
-    time.sleep(0.5)
-
-    if not step1_center(driver, data["center"]):
-        return False, None
-    if not step2_service_level(driver, data["service_level"]):
-        return False, None
-    if not step3_visa_type(driver, data["visa_type"]):
-        return False, None
-    if not step4_date(driver, data["travel_date"]):
-        return False, None
-    if not step5_destination(driver, data["destination"]):
-        return False, None
-    step6_terms(driver)
-    print("  ===== FORM FILLED ✅ =====")
-
-    return step7_check_availability(driver)
-
-# ============================================================
-# Main loop
-# ============================================================
-def run_forever(driver, account):
-    email = account["email"]
-    data = account["data"]
-    print(f"\n[{email}] Started - every {REFRESH_INTERVAL}s")
-
-    attempt = 0
-    fail_count = 0
-
-    while not stop_flag.is_set():
-        attempt += 1
-
-        try:
-            _ = driver.current_url
-        except:
-            notify_error(account, "Browser closed")
+    while True:
+        if stop_flag.is_set():
             break
 
-        try:
-            if not go_to_appointment_page(driver):
-                fail_count += 1
-                time.sleep(5)
-                continue
+        if not open_appointment(driver):
+            login(driver, acc["email"], acc["password"])
+            continue
 
-            has_slots, slots = fill_and_check(driver, data)
+        if not fill_form(driver, acc["data"]):
+            continue
 
-            if has_slots:
-                notify_success(account, slots)
-                print(f"[{email}] ✅✅✅ SLOTS FOUND! attempt #{attempt}")
-                stop_flag.set()
-                return True
+        result = check(driver)
 
-            # has_slots=False, slots=None means a step failed
-            # has_slots=False, slots=[] means form worked but no slots
-            fail_count = 0 if slots is not None else fail_count + 1
+        if result is True:
+            msg = (
+                f"🔥 تم العثور على موعد!\n"
+                f"👤 {acc['email']}\n"
+                f"📋 {acc['data']['visa_type']}\n"
+                f"🏢 {acc['data']['center']}\n"
+                f"🕒 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"⚠️ ادخل وأكمل الحجز يدوياً الآن!"
+            )
+            send(msg)
+            print(f"\n✅ SLOTS FOUND! Telegram sent. Bot stopping.")
+            stop_flag.set()
+            break
 
-            if fail_count >= 5:
-                notify_error(account, f"Form failed {fail_count}x in a row")
-                fail_count = 0
-                login(driver, email, account["password"])
-                time.sleep(3)
-            elif attempt % 5 == 0:
-                print(f"[{email}] Attempt #{attempt} - still searching...")
+        elif result is False:
+            if not notified_no_slots:
+                send(f"❌ لا يوجد مواعيد حالياً\n{acc['email']}")
+                notified_no_slots = True
+            print("  [LOOP] No slots... retrying")
+            time.sleep(REFRESH_INTERVAL)
 
-        except WebDriverException as e:
-            err = str(e).lower()
-            if "invalid session" in err or "disconnected" in err:
-                notify_error(account, "Browser disconnected")
-                break
-            print(f"[{email}] WebDriverError: {e}")
-            time.sleep(3)
-        except Exception as e:
-            print(f"[{email}] Error: {e}")
-            time.sleep(3)
+        else:
+            print("  [CHECK] Error, retrying...")
+            time.sleep(5)
 
-        time.sleep(REFRESH_INTERVAL)
+    driver.quit()
 
-    return False
-
-# ============================================================
-# Run account
-# ============================================================
-def run_account(account):
-    driver = None
-    email = account["email"]
-    try:
-        print(f"\n{'='*50}\nStarting: {email}\n{'='*50}")
-        driver = get_driver()
-        if not login(driver, email, account["password"]):
-            notify_error(account, "Login failed")
-            return
-        run_forever(driver, account)
-    except Exception as e:
-        print(f"[{email}] FATAL: {e}")
-        notify_error(account, str(e)[:100])
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except:
-                pass
-            print(f"[{email}] Browser closed")
-
-# ============================================================
-# Entry point
-# ============================================================
+# ================= START =================
 def main():
-    print("""
-    ╔════════════════════════════════════════════╗
-    ║     Almaviva Booking Bot v8.4              ║
-    ║  center→service→visa→date→dest→CHECK       ║
-    ╚════════════════════════════════════════════╝
-    """)
-    print(f"Interval: {REFRESH_INTERVAL}s | Accounts: {len(ACCOUNTS)}")
+    for acc in ACCOUNTS:
+        threading.Thread(target=run, args=(acc,), daemon=True).start()
 
-    threads = []
-    for account in ACCOUNTS:
-        t = threading.Thread(target=run_account, args=(account,), daemon=True)
-        t.start()
-        threads.append(t)
-        time.sleep(2)
-
-    try:
-        for t in threads:
-            t.join()
-    except KeyboardInterrupt:
-        print("\nStopped manually")
-        stop_flag.set()
-
-    print("\nBot finished.")
+    while True:
+        if stop_flag.is_set():
+            print("\nBot stopped.")
+            break
+        time.sleep(1)
 
 if __name__ == "__main__":
     main()
