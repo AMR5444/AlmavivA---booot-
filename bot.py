@@ -64,24 +64,134 @@ def send(msg):
 
 # ================= LOGIN =================
 def login(driver, email, password):
-    driver.get("https://egy.almaviva-visa.it/login")
+    print("[LOGIN] فتح الموقع...")
+    driver.get("https://egy.almaviva-visa.it/")
 
+    # انتظر الصفحة تتحمل
+    time.sleep(3)
+
+    # لو عمل redirect للـ PKCE login مباشرة
+    if "egyiam.almaviva-visa.it" in driver.current_url:
+        print("[LOGIN] Redirect للـ login تلقائي ✓")
+    else:
+        # ابحث عن زرار الـ login في الصفحة الرئيسية
+        print("[LOGIN] بندور على زرار Login...")
+        login_found = False
+
+        # جرب كل الطرق الممكنة لإيجاد زرار اللوجين
+        login_xpaths = [
+            # زرار أيقونة الحساب
+            "//button[.//mat-icon[contains(text(),'person')]]",
+            "//button[contains(@class,'account')]",
+            # لينك Login مباشر
+            "//a[contains(normalize-space(.),'Login')]",
+            "//a[contains(normalize-space(.),'Sign in')]",
+            "//button[contains(normalize-space(.),'Login')]",
+            "//button[contains(normalize-space(.),'Sign in')]",
+            # أي زرار فيه person icon
+            "//*[contains(@class,'user') or contains(@class,'account') or contains(@class,'person')]",
+        ]
+
+        for xpath in login_xpaths:
+            try:
+                btn = WebDriverWait(driver, 3).until(
+                    EC.element_to_be_clickable((By.XPATH, xpath))
+                )
+                print(f"[LOGIN] لقيناه: {btn.text.strip() or btn.get_attribute('class')}")
+                driver.execute_script("arguments[0].click();", btn)
+                time.sleep(2)
+
+                # بعد الضغط، دور على Login في القائمة المنسدلة لو ظهرت
+                try:
+                    login_menu = WebDriverWait(driver, 3).until(
+                        EC.element_to_be_clickable((By.XPATH,
+                            "//button[contains(normalize-space(.),'Login')] | //a[contains(normalize-space(.),'Login')]"))
+                    )
+                    driver.execute_script("arguments[0].click();", login_menu)
+                    time.sleep(2)
+                except:
+                    pass
+
+                # تحقق لو انتقلنا لصفحة الـ login
+                if "egyiam.almaviva-visa.it" in driver.current_url:
+                    login_found = True
+                    break
+            except:
+                continue
+
+        # لو مش لقيناش أي زرار، انتظر الـ redirect التلقائي
+        if not login_found:
+            print("[LOGIN] انتظار redirect تلقائي...")
+            for _ in range(15):
+                time.sleep(1)
+                if "egyiam.almaviva-visa.it" in driver.current_url:
+                    login_found = True
+                    break
+                # لو لقينا username field مباشرة
+                try:
+                    driver.find_element(By.ID, "username")
+                    login_found = True
+                    break
+                except:
+                    pass
+
+        if not login_found:
+            # آخر محاولة: افتح appointment وانتظر redirect للـ login
+            print("[LOGIN] جرب عبر appointment...")
+            driver.get("https://egy.almaviva-visa.it/appointment")
+            for _ in range(15):
+                time.sleep(1)
+                if "egyiam.almaviva-visa.it" in driver.current_url:
+                    break
+                try:
+                    driver.find_element(By.ID, "username")
+                    break
+                except:
+                    pass
+
+    # ⭐ انتظر حقل الـ username يظهر
+    print("[LOGIN] انتظار حقول تسجيل الدخول...")
     try:
-        WebDriverWait(driver, 20).until(
+        WebDriverWait(driver, 30).until(
             EC.presence_of_element_located((By.ID, "username"))
         )
+        print("[LOGIN] ✓ حقول اللوجين ظهرت")
     except:
-        return True
-
-    driver.find_element(By.ID, "username").send_keys(email)
-    driver.find_element(By.ID, "password").send_keys(password)
-    driver.find_element(By.ID, "kc-login").click()
-
-    for _ in range(20):
-        if "login" not in driver.current_url:
+        # ممكن يكون logged in بالفعل
+        if "egy.almaviva-visa.it" in driver.current_url and "egyiam" not in driver.current_url:
+            print("[LOGIN] ✓ Logged in بالفعل")
             return True
-        time.sleep(1)
+        print(f"[LOGIN] ✗ الحقول مش ظهرت - {driver.current_url[:80]}")
+        return False
 
+    # ⭐ عبي الـ email والـ password
+    try:
+        u = driver.find_element(By.ID, "username")
+        u.clear()
+        u.send_keys(email)
+        time.sleep(0.3)
+
+        p = driver.find_element(By.ID, "password")
+        p.clear()
+        p.send_keys(password)
+        time.sleep(0.3)
+
+        driver.find_element(By.ID, "kc-login").click()
+        print("[LOGIN] ✓ ضغطنا زرار Login")
+    except Exception as e:
+        print(f"[LOGIN] ✗ خطأ: {e}")
+        return False
+
+    # ⭐ انتظر الـ redirect يرجع للموقع بعد اللوجين
+    print("[LOGIN] انتظار اكتمال تسجيل الدخول...")
+    for _ in range(30):
+        time.sleep(1)
+        current = driver.current_url
+        if "egy.almaviva-visa.it" in current and "egyiam" not in current:
+            print("[LOGIN] ✅ تسجيل الدخول نجح!")
+            return True
+
+    print(f"[LOGIN] ✗ فشل - {driver.current_url[:80]}")
     return False
 
 # ================= OPEN APPOINTMENT =================
@@ -106,7 +216,7 @@ def open_appointment(driver):
     except:
         return False
 
-# ================= SELECT DROPDOWN (FIX STALE) =================
+# ================= SELECT DROPDOWN =================
 def select_option(driver, formcontrol, text):
     for _ in range(3):
         try:
@@ -115,13 +225,10 @@ def select_option(driver, formcontrol, text):
                     (By.XPATH, f"//mat-select[@formcontrolname='{formcontrol}']")
                 )
             )
-
             real_click(driver, el)
-
             opts = WebDriverWait(driver, 10).until(
                 EC.presence_of_all_elements_located((By.XPATH, "//mat-option"))
             )
-
             for o in opts:
                 if text.lower() in o.text.lower():
                     real_click(driver, o)
@@ -139,13 +246,10 @@ def select_last_dropdown(driver, text):
             selects = driver.find_elements(By.XPATH, "//mat-select")
             selects = [s for s in selects if s.is_displayed()]
             el = selects[-1]
-
             real_click(driver, el)
-
             opts = WebDriverWait(driver, 10).until(
                 EC.presence_of_all_elements_located((By.XPATH, "//mat-option"))
             )
-
             for o in opts:
                 if text.lower() in o.text.lower():
                     real_click(driver, o)
@@ -197,12 +301,40 @@ def fill_form(driver, data):
 
     return True
 
+# ================= PROCEED WITH APPOINTMENT =================
+def click_proceed(driver):
+    print("  [PROCEED] دوس على Proceed with appointment...")
+
+    proceed_xpaths = [
+        "//button[contains(normalize-space(.),'Proceed with appointment')]",
+        "//button[contains(normalize-space(.),'Proceed')]",
+        "//*[contains(@class,'visasys-button')]//button",
+        "//div[contains(@class,'visasys-button')]//button",
+    ]
+
+    for xpath in proceed_xpaths:
+        try:
+            btn = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.XPATH, xpath))
+            )
+            print(f"  [PROCEED] لقيناه: '{btn.text.strip()}'")
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+            time.sleep(0.3)
+            driver.execute_script("arguments[0].click();", btn)
+            print("  [PROCEED] ✅ اتضغط!")
+            time.sleep(2)
+            return True
+        except:
+            continue
+
+    print("  [PROCEED] ✗ مش لقيناش الزرار")
+    return False
+
 # ================= CHECK =================
 def check(driver):
     print("  [CHECK] Searching button...")
 
     btn = None
-
     xpaths = [
         "//button[contains(.,'Check')]",
         "//button[contains(.,'Availability')]",
@@ -247,37 +379,38 @@ def check(driver):
 
     page = driver.page_source.lower()
 
-    # ⭐ التصحيح: كل شرط لازم يكون "in page"
+    slots_found = (
+        "appointments available" in page or
+        "proceed with appointment" in page
+    )
+
+    if slots_found:
+        print("  [CHECK] ✅ SLOTS FOUND!")
+        return True
+
     no_slots = (
         "no available" in page or
         "not available" in page or
         "لا يوجد" in page or
-        "لا توجد" in page  # ← كانت ناقصها "in page"
+        "لا توجد" in page
     )
 
     if no_slots:
         print("  [CHECK] No slots ❌")
         return False
 
-    # ⭐ تحقق إضافي: دور على عناصر المواعيد
-    slot_selectors = [
-        ".available-day",
-        "[class*='available']",
-        "[class*='slot']",
-        "[class*='calendar']",
-    ]
-    for sel in slot_selectors:
+    for sel in [".available-day", "[class*='available']", "[class*='slot']"]:
         try:
             els = driver.find_elements(By.CSS_SELECTOR, sel)
             slots = [e.text.strip() for e in els if e.text.strip()]
             if slots:
-                print(f"  [CHECK] ✅ SLOTS FOUND: {slots[:5]}")
+                print(f"  [CHECK] ✅ SLOTS: {slots[:5]}")
                 return True
         except:
             pass
 
-    print("  [CHECK] POSSIBLE SLOT 🔥 (no 'no slots' text found)")
-    return True
+    print("  [CHECK] No slots ❌")
+    return False
 
 # ================= MAIN =================
 def run(acc):
@@ -303,14 +436,20 @@ def run(acc):
         result = check(driver)
 
         if result is True:
+            proceed_ok = click_proceed(driver)
+
             msg = (
                 f"🔥 تم العثور على موعد!\n"
                 f"👤 {acc['email']}\n"
                 f"📋 {acc['data']['visa_type']}\n"
                 f"🏢 {acc['data']['center']}\n"
                 f"🕒 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"⚠️ ادخل وأكمل الحجز يدوياً الآن!"
             )
+            if proceed_ok:
+                msg += "✅ تم الضغط على Proceed — أكمل الحجز يدوياً الآن!"
+            else:
+                msg += "⚠️ ادخل وأكمل الحجز يدوياً الآن!"
+
             send(msg)
             print(f"\n✅ SLOTS FOUND! Telegram sent. Bot stopping.")
             stop_flag.set()

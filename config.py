@@ -14,7 +14,7 @@ ACCOUNTS = [
             "center":        "Cairo",
             "service_level": "Standard",   # Standard - EGP 1875
             "visa_type":     "Study Visa (D)",      # اللوج هيطبع الخيارات لو غلط
-            "travel_date":   "27/04/2026",
+            "travel_date":   "4/05/2026",
             "destination":   "roma"
         }
     },
